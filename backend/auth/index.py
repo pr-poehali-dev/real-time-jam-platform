@@ -1,5 +1,5 @@
 """
-Аутентификация BraBrey через Google OAuth 2.0.
+Аутентификация BraBrey через Google OAuth 2.0. v2
 Эндпоинты:
   GET /auth?action=login   — редирект на Google
   GET /auth?action=callback&code=... — обмен кода на токен, создание сессии
