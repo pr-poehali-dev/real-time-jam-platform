@@ -1,15 +1,18 @@
 """
-Аутентификация BraBrey через Google OAuth 2.0. v2
+Аутентификация BraBrey: email/пароль + Google OAuth 2.0. v3
 Эндпоинты:
-  GET /auth?action=login   — редирект на Google
-  GET /auth?action=callback&code=... — обмен кода на токен, создание сессии
-  GET /auth?action=me      — получить текущего пользователя по токену
-  POST /auth?action=logout — завершить сессию
+  POST /auth?action=register  — регистрация email+пароль
+  POST /auth?action=email_login — вход email+пароль
+  GET  /auth?action=login     — редирект на Google
+  GET  /auth?action=callback  — Google OAuth callback
+  GET  /auth?action=me        — текущий пользователь
+  POST /auth?action=logout    — завершить сессию
 """
 
 import os
 import json
 import secrets
+import hashlib
 import urllib.parse
 import urllib.request
 import psycopg2
@@ -30,8 +33,18 @@ def get_db():
     return psycopg2.connect(os.environ['DATABASE_URL'])
 
 
-def google_redirect_url(base_url: str) -> str:
-    return base_url.rstrip('/') + '/auth?action=callback'
+def hash_password(password: str) -> str:
+    salt = os.environ.get('FRONTEND_URL', 'brabrey_salt_2024')
+    return hashlib.sha256((password + salt).encode()).hexdigest()
+
+
+def create_session(cur, user_id) -> str:
+    token = secrets.token_urlsafe(32)
+    cur.execute(
+        f"INSERT INTO {SCHEMA}.sessions (token, user_id) VALUES (%s, %s)",
+        (token, str(user_id)),
+    )
+    return token
 
 
 def handler(event: dict, context) -> dict:
@@ -42,14 +55,75 @@ def handler(event: dict, context) -> dict:
     params = event.get('queryStringParameters') or {}
     action = params.get('action', '')
 
-    # Базовый URL функции для redirect_uri
-    request_ctx = event.get('requestContext', {})
     host = (event.get('headers') or {}).get('host', '')
     base_url = f"https://{host}" if host else FRONTEND_URL
 
-    # --- GET /auth?action=login ---
+    # --- POST /auth?action=register ---
+    if method == 'POST' and action == 'register':
+        body = json.loads(event.get('body') or '{}')
+        email = (body.get('email') or '').strip().lower()
+        password = body.get('password') or ''
+        name = (body.get('name') or '').strip()
+
+        if not email or not password or not name:
+            return _json(400, {'error': 'Заполни все поля'})
+        if len(password) < 6:
+            return _json(400, {'error': 'Пароль минимум 6 символов'})
+        if len(name) < 2:
+            return _json(400, {'error': 'Введи имя минимум 2 символа'})
+
+        pw_hash = hash_password(password)
+        conn = get_db()
+        cur = conn.cursor()
+        cur.execute(f"SELECT id FROM {SCHEMA}.users WHERE email = %s", (email,))
+        if cur.fetchone():
+            cur.close()
+            conn.close()
+            return _json(409, {'error': 'Этот email уже зарегистрирован'})
+
+        cur.execute(
+            f"INSERT INTO {SCHEMA}.users (email, name, password_hash) VALUES (%s, %s, %s) RETURNING id",
+            (email, name, pw_hash),
+        )
+        user_id = cur.fetchone()[0]
+        token = create_session(cur, user_id)
+        conn.commit()
+        cur.close()
+        conn.close()
+        return _json(200, {'token': token, 'name': name, 'email': email})
+
+    # --- POST /auth?action=email_login ---
+    if method == 'POST' and action == 'email_login':
+        body = json.loads(event.get('body') or '{}')
+        email = (body.get('email') or '').strip().lower()
+        password = body.get('password') or ''
+
+        if not email or not password:
+            return _json(400, {'error': 'Введи email и пароль'})
+
+        pw_hash = hash_password(password)
+        conn = get_db()
+        cur = conn.cursor()
+        cur.execute(
+            f"SELECT id, name, avatar_url FROM {SCHEMA}.users WHERE email = %s AND password_hash = %s",
+            (email, pw_hash),
+        )
+        row = cur.fetchone()
+        if not row:
+            cur.close()
+            conn.close()
+            return _json(401, {'error': 'Неверный email или пароль'})
+
+        user_id, name, avatar_url = row
+        token = create_session(cur, user_id)
+        conn.commit()
+        cur.close()
+        conn.close()
+        return _json(200, {'token': token, 'name': name, 'email': email, 'avatar_url': avatar_url})
+
+    # --- GET /auth?action=login (Google) ---
     if method == 'GET' and action == 'login':
-        redirect_uri = google_redirect_url(base_url)
+        redirect_uri = base_url.rstrip('/') + '/auth?action=callback'
         oauth_url = (
             'https://accounts.google.com/o/oauth2/v2/auth?'
             + urllib.parse.urlencode({
@@ -61,23 +135,16 @@ def handler(event: dict, context) -> dict:
                 'prompt': 'select_account',
             })
         )
-        return {
-            'statusCode': 302,
-            'headers': {**CORS_HEADERS, 'Location': oauth_url},
-            'body': '',
-        }
+        return {'statusCode': 302, 'headers': {**CORS_HEADERS, 'Location': oauth_url}, 'body': ''}
 
-    # --- GET /auth?action=callback&code=... ---
+    # --- GET /auth?action=callback (Google) ---
     if method == 'GET' and action == 'callback':
         code = params.get('code', '')
         error = params.get('error', '')
-
         if error or not code:
-            return _redirect_frontend(f'/login?error={error or "no_code"}')
+            return _redirect_frontend(f'/?auth_error={error or "no_code"}')
 
-        redirect_uri = google_redirect_url(base_url)
-
-        # Обмен code → access_token
+        redirect_uri = base_url.rstrip('/') + '/auth?action=callback'
         token_data = urllib.parse.urlencode({
             'code': code,
             'client_id': GOOGLE_CLIENT_ID,
@@ -96,8 +163,6 @@ def handler(event: dict, context) -> dict:
             token_resp = json.loads(resp.read())
 
         access_token = token_resp.get('access_token', '')
-
-        # Получить данные пользователя
         user_req = urllib.request.Request(
             'https://www.googleapis.com/oauth2/v2/userinfo',
             headers={'Authorization': f'Bearer {access_token}'},
@@ -110,32 +175,27 @@ def handler(event: dict, context) -> dict:
         name = google_user.get('name', '')
         avatar = google_user.get('picture', '')
 
-        # Upsert пользователя и создать сессию
-        session_token = secrets.token_urlsafe(32)
         conn = get_db()
         cur = conn.cursor()
-        cur.execute(
-            f"""
-            INSERT INTO {SCHEMA}.users (google_id, email, name, avatar_url)
-            VALUES (%s, %s, %s, %s)
-            ON CONFLICT (google_id) DO UPDATE
-              SET email = EXCLUDED.email,
-                  name = EXCLUDED.name,
-                  avatar_url = EXCLUDED.avatar_url,
-                  updated_at = NOW()
-            RETURNING id
-            """,
-            (google_id, email, name, avatar),
-        )
-        user_id = cur.fetchone()[0]
-        cur.execute(
-            f"INSERT INTO {SCHEMA}.sessions (token, user_id) VALUES (%s, %s)",
-            (session_token, str(user_id)),
-        )
+        cur.execute(f"SELECT id FROM {SCHEMA}.users WHERE google_id = %s", (google_id,))
+        existing = cur.fetchone()
+        if existing:
+            user_id = existing[0]
+            cur.execute(
+                f"UPDATE {SCHEMA}.users SET email=%s, name=%s, avatar_url=%s, updated_at=NOW() WHERE id=%s",
+                (email, name, avatar, str(user_id)),
+            )
+        else:
+            cur.execute(
+                f"INSERT INTO {SCHEMA}.users (google_id, email, name, avatar_url) VALUES (%s,%s,%s,%s) RETURNING id",
+                (google_id, email, name, avatar),
+            )
+            user_id = cur.fetchone()[0]
+
+        session_token = create_session(cur, user_id)
         conn.commit()
         cur.close()
         conn.close()
-
         return _redirect_frontend(f'/?token={session_token}')
 
     # --- GET /auth?action=me ---
@@ -162,12 +222,7 @@ def handler(event: dict, context) -> dict:
         if not row:
             return _json(401, {'error': 'unauthorized'})
 
-        return _json(200, {
-            'id': str(row[0]),
-            'email': row[1],
-            'name': row[2],
-            'avatar_url': row[3],
-        })
+        return _json(200, {'id': str(row[0]), 'email': row[1], 'name': row[2], 'avatar_url': row[3]})
 
     # --- POST /auth?action=logout ---
     if method == 'POST' and action == 'logout':
@@ -188,7 +243,7 @@ def _json(status: int, body: dict) -> dict:
     return {
         'statusCode': status,
         'headers': {**CORS_HEADERS, 'Content-Type': 'application/json'},
-        'body': json.dumps(body),
+        'body': json.dumps(body, ensure_ascii=False),
     }
 
 

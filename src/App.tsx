@@ -40,7 +40,7 @@ export default function App() {
   }
 
   if (!user) {
-    return <LoginPage />;
+    return <LoginPage onSuccess={() => window.location.reload()} />;
   }
 
   const navigate = (p: string) => {

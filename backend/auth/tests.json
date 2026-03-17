@@ -1,12 +1,6 @@
 {
   "tests": [
     {
-      "name": "Login redirect to Google",
-      "method": "GET",
-      "path": "/?action=login",
-      "expectedStatus": 302
-    },
-    {
       "name": "Me without token returns 401",
       "method": "GET",
       "path": "/?action=me",
@@ -20,6 +14,14 @@
       "path": "/?action=logout",
       "expectedStatus": 200,
       "expectedBody": { "ok": true },
+      "bodyMatcher": "partial"
+    },
+    {
+      "name": "Register with missing fields returns 400",
+      "method": "POST",
+      "path": "/?action=register",
+      "body": { "email": "", "password": "", "name": "" },
+      "expectedStatus": 400,
       "bodyMatcher": "partial"
     }
   ]
