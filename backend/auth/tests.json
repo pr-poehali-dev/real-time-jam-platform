@@ -1,0 +1,26 @@
+{
+  "tests": [
+    {
+      "name": "Login redirect to Google",
+      "method": "GET",
+      "path": "/?action=login",
+      "expectedStatus": 302
+    },
+    {
+      "name": "Me without token returns 401",
+      "method": "GET",
+      "path": "/?action=me",
+      "expectedStatus": 401,
+      "expectedBody": { "error": "unauthorized" },
+      "bodyMatcher": "partial"
+    },
+    {
+      "name": "Logout without token returns ok",
+      "method": "POST",
+      "path": "/?action=logout",
+      "expectedStatus": 200,
+      "expectedBody": { "ok": true },
+      "bodyMatcher": "partial"
+    }
+  ]
+}

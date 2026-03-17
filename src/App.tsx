@@ -7,6 +7,8 @@ import StudioPage from '@/pages/StudioPage';
 import ProfilePage from '@/pages/ProfilePage';
 import SongbookPage from '@/pages/SongbookPage';
 import SettingsPage from '@/pages/SettingsPage';
+import LoginPage from '@/pages/LoginPage';
+import { useAuth } from '@/hooks/useAuth';
 
 type Page = 'home' | 'catalog' | 'studio' | 'profile' | 'songbook' | 'settings';
 
@@ -22,6 +24,24 @@ const NAV_ITEMS: { id: Page; label: string; icon: string }[] = [
 export default function App() {
   const [page, setPage] = useState<Page>('home');
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const { user, loading, logout } = useAuth();
+
+  if (loading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center" style={{ backgroundColor: 'var(--dark-bg)' }}>
+        <div className="flex flex-col items-center gap-4">
+          <div className="w-12 h-12 rounded-xl bg-gradient-to-br from-purple-600 to-pink-600 flex items-center justify-center neon-glow animate-pulse">
+            <Icon name="Music2" size={22} className="text-white" />
+          </div>
+          <AudioBars active bars={5} height={24} color="#a855f7" />
+        </div>
+      </div>
+    );
+  }
+
+  if (!user) {
+    return <LoginPage />;
+  }
 
   const navigate = (p: string) => {
     setPage(p as Page);
@@ -79,8 +99,29 @@ export default function App() {
               <span className="font-display">3/5 джемов</span>
             </div>
 
-            <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-purple-600/40 to-pink-600/40 border border-[var(--neon-purple)]/30 flex items-center justify-center cursor-pointer hover:border-[var(--neon-purple)]/60 transition-all">
-              <span className="text-xs font-display font-bold text-purple-300">МИ</span>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => navigate('profile')}
+                className="flex items-center gap-2 hover:opacity-80 transition-opacity"
+                title={user.name}
+              >
+                {user.avatar_url ? (
+                  <img src={user.avatar_url} alt={user.name} className="w-9 h-9 rounded-xl object-cover border border-[var(--neon-purple)]/30" />
+                ) : (
+                  <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-purple-600/40 to-pink-600/40 border border-[var(--neon-purple)]/30 flex items-center justify-center">
+                    <span className="text-xs font-display font-bold text-purple-300">
+                      {user.name.slice(0, 2).toUpperCase()}
+                    </span>
+                  </div>
+                )}
+              </button>
+              <button
+                onClick={logout}
+                className="hidden md:flex items-center text-gray-600 hover:text-gray-300 transition-colors"
+                title="Выйти"
+              >
+                <Icon name="LogOut" size={15} />
+              </button>
             </div>
 
             {/* Mobile menu toggle */}
